@@ -1,0 +1,5 @@
+boto3>=1.26.0
+pyspark>=3.3.0
+awswrangler>=2.19.0
+pandas>=1.5.0
+

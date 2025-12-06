@@ -1,0 +1,291 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Serverless E-Commerce Analytics Pipeline - S3, Glue, Athena, Lambda, QuickSight'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: ecommerce-analytics
+    Description: Project name prefix for resources
+  
+  RawDataBucketName:
+    Type: String
+    Default: ecommerce-raw-data
+    Description: S3 bucket name for raw transaction data
+  
+  ProcessedDataBucketName:
+    Type: String
+    Default: ecommerce-processed-data
+    Description: S3 bucket name for processed Parquet data
+
+Resources:
+  # S3 Buckets
+  RawDataBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${RawDataBucketName}-${AWS::AccountId}'
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldVersions
+            Status: Enabled
+            NoncurrentVersionExpirationInDays: 30
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: s3:ObjectCreated:*
+            Function: !GetAtt TriggerGlueJobFunction.Arn
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: raw/
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  ProcessedDataBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${ProcessedDataBucketName}-${AWS::AccountId}'
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # IAM Roles
+  GlueServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-GlueServiceRole'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: glue.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole
+      Policies:
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub 'arn:aws:s3:::${RawDataBucket}/*'
+                  - !Sub 'arn:aws:s3:::${RawDataBucket}'
+                  - !Sub 'arn:aws:s3:::${ProcessedDataBucket}/*'
+                  - !Sub 'arn:aws:s3:::${ProcessedDataBucket}'
+                  - !Sub 'arn:aws:s3:::${GlueScriptsBucket}/*'
+                  - !Sub 'arn:aws:s3:::${GlueScriptsBucket}'
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-LambdaExecutionRole'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: GlueAndS3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - glue:StartJobRun
+                  - glue:GetJobRun
+                  - glue:GetJob
+                Resource: !Sub 'arn:aws:glue:${AWS::Region}:${AWS::AccountId}:job/${ProjectName}-ETLJob'
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub 'arn:aws:s3:::${RawDataBucket}/*'
+                  - !Sub 'arn:aws:s3:::${RawDataBucket}'
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub 'arn:aws:s3:::${GlueScriptsBucket}/*'
+                  - !Sub 'arn:aws:s3:::${GlueScriptsBucket}'
+
+  # Glue Database
+  GlueDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: !Sub '${ProjectName}_analytics_db'
+        Description: Database for e-commerce transaction analytics
+
+  # Glue Scripts Bucket (for storing ETL script)
+  GlueScriptsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${ProjectName}-glue-scripts-${AWS::AccountId}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # Glue ETL Job
+  GlueETLJob:
+    Type: AWS::Glue::Job
+    DependsOn: GlueScriptsBucket
+    Properties:
+      Name: !Sub '${ProjectName}-ETLJob'
+      Role: !GetAtt GlueServiceRole.Arn
+      Command:
+        Name: glueetl
+        ScriptLocation: !Sub 's3://${GlueScriptsBucket}/glue/etl-job.py'
+        PythonVersion: '3'
+      DefaultArguments:
+        '--TempDir': !Sub 's3://${ProcessedDataBucket}/temp/'
+        '--job-bookmark-option': 'job-bookmark-enable'
+        '--enable-metrics': 'true'
+        '--enable-spark-ui': 'true'
+        '--spark-event-logs-path': !Sub 's3://${ProcessedDataBucket}/spark-logs/'
+      GlueVersion: '3.0'
+      NumberOfWorkers: 2
+      WorkerType: G.1X
+      MaxRetries: 2
+      Timeout: 60
+
+  # Lambda Function to Trigger Glue Job
+  TriggerGlueJobFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-TriggerGlueJob'
+      Runtime: python3.9
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 300
+      Environment:
+        Variables:
+          GLUE_JOB_NAME: !Ref GlueETLJob
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import os
+          
+          glue = boto3.client('glue')
+          
+          def lambda_handler(event, context):
+              job_name = os.environ['GLUE_JOB_NAME']
+              
+              # Extract bucket and key from S3 event
+              for record in event['Records']:
+                  bucket = record['s3']['bucket']['name']
+                  key = record['s3']['object']['key']
+                  
+                  # Only process files in raw/ prefix
+                  if not key.startswith('raw/'):
+                      continue
+                  
+                  # Start Glue job
+                  response = glue.start_job_run(
+                      JobName=job_name,
+                      Arguments={
+                          '--raw_bucket': bucket,
+                          '--raw_key': key,
+                          '--processed_bucket': os.environ.get('PROCESSED_BUCKET', ''),
+                      }
+                  )
+                  
+                  print(f"Started Glue job run: {response['JobRunId']}")
+              
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps('Glue job triggered successfully')
+              }
+
+  # Lambda Permission for S3 to invoke Lambda
+  LambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref TriggerGlueJobFunction
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceArn: !Sub 'arn:aws:s3:::${RawDataBucket}'
+
+  # Athena Workgroup
+  AthenaWorkgroup:
+    Type: AWS::Athena::WorkGroup
+    Properties:
+      Name: !Sub '${ProjectName}-workgroup'
+      Description: Workgroup for e-commerce analytics queries
+      WorkGroupConfiguration:
+        ResultConfiguration:
+          OutputLocation: !Sub 's3://${ProcessedDataBucket}/athena-results/'
+          EncryptionConfiguration:
+            EncryptionOption: SSE_S3
+        EnforceWorkGroupConfiguration: true
+        PublishCloudWatchMetrics: true
+        EngineVersion:
+          SelectedEngineVersion: 'Athena engine version 2'
+
+Outputs:
+  RawDataBucketName:
+    Description: Name of the raw data S3 bucket
+    Value: !Ref RawDataBucket
+    Export:
+      Name: !Sub '${ProjectName}-RawDataBucket'
+
+  ProcessedDataBucketName:
+    Description: Name of the processed data S3 bucket
+    Value: !Ref ProcessedDataBucket
+    Export:
+      Name: !Sub '${ProjectName}-ProcessedDataBucket'
+
+  GlueJobName:
+    Description: Name of the Glue ETL job
+    Value: !Ref GlueETLJob
+    Export:
+      Name: !Sub '${ProjectName}-GlueJobName'
+
+  GlueDatabaseName:
+    Description: Name of the Glue database
+    Value: !Ref GlueDatabase
+    Export:
+      Name: !Sub '${ProjectName}-GlueDatabase'
+
+  AthenaWorkgroupName:
+    Description: Name of the Athena workgroup
+    Value: !Ref AthenaWorkgroup
+    Export:
+      Name: !Sub '${ProjectName}-AthenaWorkgroup'
+
+  LambdaFunctionName:
+    Description: Name of the Lambda function that triggers Glue
+    Value: !Ref TriggerGlueJobFunction
+    Export:
+      Name: !Sub '${ProjectName}-LambdaFunction'
+
+  GlueScriptsBucketName:
+    Description: Name of the S3 bucket storing Glue scripts
+    Value: !Ref GlueScriptsBucket
+    Export:
+      Name: !Sub '${ProjectName}-GlueScriptsBucket'
+
