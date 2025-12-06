@@ -11,9 +11,11 @@ ENV/
 
 # Data files
 data-generator/output/
+local-demo/data/
 *.csv
 *.json
 *.parquet
+*.db
 
 # AWS
 .aws/

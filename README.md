@@ -2,6 +2,12 @@
 
 A fully serverless analytics pipeline that processes raw e-commerce transaction data from S3, transforms it using AWS Glue, and makes it query-ready for large-scale analysis in Athena. The pipeline automatically triggers on new data uploads, performs schema normalization, removes duplicates, partitions data by date, and writes optimized Parquet files for efficient querying.
 
+## 🚀 Live Demo
+
+**Dashboard**: [https://ecommerce-analytics-pipeline-1.onrender.com](https://ecommerce-analytics-pipeline-1.onrender.com)
+
+Interactive analytics dashboard with real-time visualizations of e-commerce transaction data.
+
 ## Architecture Overview
 
 ```
