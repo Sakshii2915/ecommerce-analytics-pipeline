@@ -1,0 +1,2 @@
+web: python setup_render.py && python dashboard.py
+

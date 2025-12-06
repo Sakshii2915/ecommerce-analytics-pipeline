@@ -95,14 +95,18 @@ def create_dashboard():
         
     ], style={'padding': '20px'})
 
-app.layout = create_dashboard
+app.layout = create_dashboard()
 
 if __name__ == '__main__':
+    import os
+    port = int(os.environ.get('PORT', 8050))
+    debug = os.environ.get('DEBUG', 'False').lower() == 'true'
+    
     print("=" * 60)
-    print("Starting Local Dashboard...")
+    print("Starting E-Commerce Analytics Dashboard...")
     print("=" * 60)
-    print("Open your browser to: http://localhost:8050")
-    print("Press Ctrl+C to stop the server")
+    print(f"Server running on port: {port}")
+    print(f"Debug mode: {debug}")
     print("=" * 60)
-    app.run_server(debug=True, port=8050)
+    app.run(debug=debug, port=port, host='0.0.0.0')
 

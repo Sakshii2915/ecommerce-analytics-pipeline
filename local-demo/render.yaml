@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: ecommerce-analytics-dashboard
+    env: python
+    buildCommand: pip install -r requirements.txt && python etl_process.py
+    startCommand: python dashboard.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: PORT
+        value: 8050
+
